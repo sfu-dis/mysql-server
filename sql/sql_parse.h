@@ -102,9 +102,14 @@ void mysql_reset_thd_for_next_command(THD *thd);
 bool create_select_for_variable(Parse_context *pc, const char *var_name);
 void create_table_set_open_action_and_adjust_tables(LEX *lex);
 int mysql_execute_command(THD *thd, bool first_level = false);
-bool do_command(THD *thd);
+bool do_command(THD *thd, bool force_sync, bool *out_is_early_return);
+void do_command_bottom_half(THD *thd);
 bool dispatch_command(THD *thd, const COM_DATA *com_data,
-                      enum enum_server_command command);
+                      enum enum_server_command command, bool force_sync, bool *is_early_return);
+class Sql_cmd_clone;
+void dispatch_command_bottom_half(THD *thd, enum enum_server_command command,
+                                  Sql_cmd_clone *clone_cmd,
+                                  struct System_status_var *query_start_status_ptr);
 bool prepare_index_and_data_dir_path(THD *thd, const char **data_file_name,
                                      const char **index_file_name,
                                      const char *table_name);
@@ -123,7 +128,7 @@ bool shutdown(THD *thd, enum mysql_enum_shutdown_level level);
 bool show_precheck(THD *thd, LEX *lex, bool lock);
 
 /* Variables */
-
+extern bool enable_commit_pipeline;
 extern uint sql_command_flags[];
 extern const LEX_CSTRING command_name[];
 

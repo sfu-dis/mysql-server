@@ -30,6 +30,23 @@ MACRO (PFS_ADD_TEST name)
   MYSQL_ADD_EXECUTABLE(${name}-t ${name}-t.cc ADD_TEST ${name})
   TARGET_LINK_LIBRARIES(${name}-t
     mytap perfschema mysys pfs_server_stubs strings ${ICU_LIBRARIES})
+IF(NOT (${ERMIA_HEADER_PATH} STREQUAL ""))
+  if(${CMAKE_BUILD_TYPE} STREQUAL "Debug")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -include ${ERMIA_HEADER_PATH}/masstree/config-debug.h")
+  else()
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -include ${ERMIA_HEADER_PATH}/masstree/config-release.h")
+  endif()
+  include_directories(${ERMIA_HEADER_PATH})
+  include_directories(${ERMIA_HEADER_PATH}/masstree)
+  include_directories(${ERMIA_HEADER_PATH}/third-party/sparsehash/src)
+  include_directories(${ERMIA_HEADER_PATH}/third-party/glog/include)
+
+  link_directories(${ERMIA_HEADER_PATH}/third-party/glog/lib)
+  find_library(ERMIA_LIB ermia_si HINTS ${ERMIA_LIB_PATH})
+  message(INFO "UNIT-TEST: Need to link ERMIA libs and headers ${ERMIA_LIB}")
+  TARGET_LINK_LIBRARIES(${name}-t ${ERMIA_LIB})
+ENDIF()
+
 ENDMACRO()
 
 SET(tests
@@ -64,10 +81,13 @@ MYSQL_ADD_EXECUTABLE(pfs_connect_attr-t
 
 ADD_DEPENDENCIES(pfs_connect_attr-t GenServerSource)
 # We need to explicitly link in everything referenced in sql/sql_builtin.cc
+find_library(ERMIA_LIB ermia_si HINTS ${ERMIA_LIB_PATH})
+message(INFO "UNIT-TEST: Need to link ERMIA libs and headers ${ERMIA_LIB}")
 TARGET_LINK_LIBRARIES(pfs_connect_attr-t
   mytap
   perfschema
   sql_main
   ${MYSQLD_STATIC_PLUGIN_LIBS}
+  ${ERMIA_LIB}
   ${ICU_LIBRARIES}
   )

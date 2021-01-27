@@ -28,6 +28,9 @@
   Instrumentation helpers for idle waits.
 */
 
+#define likely(x)   __builtin_expect(!!(x), 1)
+#define unlikely(x) __builtin_expect(!!(x), 0)
+
 #include "mysql/psi/psi_idle.h"
 
 #include "pfs_idle_provider.h"

@@ -69,6 +69,7 @@ the file COPYING.Google.
 #include "trx0roll.h"
 #include "trx0sys.h"
 #include "trx0trx.h"
+#include "dbcore/sm-log.h"
 
 /**************************************************/ /**
  @page PAGE_INNODB_REDO_LOG_THREADS Background redo log threads
@@ -2142,6 +2143,12 @@ static void log_flush_low(log_t &log) {
   LOG_SYNC_POINT("log_flush_before_flushed_to_disk_lsn");
 
   log.flushed_to_disk_lsn.store(flush_up_to_lsn);
+
+  // Only when the server finishes initialization this is meaningful
+  // Flush is done, notify ermia pipeline worker and other mysqld threads
+  if(ermia::logmgr) {
+    ermia::logmgr->set_upto_lsn(ermia::lsn_innodb, flush_up_to_lsn);
+  }
 
   /* Notify other thread(s). */
 

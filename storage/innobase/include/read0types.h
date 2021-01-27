@@ -35,6 +35,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
 #include <algorithm>
 #include "dict0mem.h"
+#include "sql/handler.h"
 
 #include "trx0types.h"
 
@@ -270,6 +271,11 @@ class ReadView {
   void creator_trx_id(trx_id_t id) {
     ut_ad(m_creator_trx_id == 0);
     m_creator_trx_id = id;
+  }
+
+ public:
+  inline trx_id_t get_creator_trx_id() {
+    return m_creator_trx_id;
   }
 
   friend class MVCC;

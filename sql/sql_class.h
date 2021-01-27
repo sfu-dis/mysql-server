@@ -51,6 +51,7 @@
 #include "mysql/components/services/psi_thread_bits.h"
 #include "mysql/components/services/psi_transaction_bits.h"
 #include "mysql/psi/mysql_thread.h"
+#include "mysql/service_thread_scheduler.h"
 #include "pfs_thread_provider.h"
 #include "sql/psi_memory_key.h"
 #include "sql/resourcegroups/resource_group_basic_types.h"
@@ -109,6 +110,8 @@
 #include "sql_string.h"
 #include "thr_lock.h"
 #include "violite.h"
+#include "sql/handler.h"
+#include "dbcore/sm-log.h"
 
 enum enum_check_fields : int;
 enum enum_tx_isolation : int;
@@ -154,6 +157,7 @@ struct Binlog_user_var_event;
 struct LOG_INFO;
 class Check_constraints_adjusted_names_map;
 
+extern ulong kill_idle_transaction_timeout;
 typedef struct user_conn USER_CONN;
 struct MYSQL_LOCK;
 
@@ -778,6 +782,11 @@ static inline void my_micro_time_to_timeval(ulonglong micro_time,
 class THD : public MDL_context_owner,
             public Query_arena,
             public Open_tables_state {
+ public:
+  void set_ha_data_ptr (handlerton *hton, void *txn) { 
+    // we use ha_ptr as the memorizer to store the engine level transactions
+    this->ha_data[hton->slot].ha_ptr = txn; 
+  }
  private:
   inline bool is_stmt_prepare() const {
     DBUG_ASSERT(0);
@@ -801,6 +810,14 @@ class THD : public MDL_context_owner,
 
  public:
   MDL_context mdl_context;
+
+  // TODO(jianqiuz): Currently we use uint64_t to store the lsn, later change it to a general type LSN.
+  // Also has its general LSN comparation, retriving fns
+  // TODO(jianqiuz): Change this to a structure contains several commit_lsn
+  ermia::rLSN rlsn;
+
+  // To keep the sequential behaviour under pipelined commit
+  bool pipeline_notified = true;
 
   /*
     MARK_COLUMNS_NONE:  Means mark_used_colums is not set and no indicator to
@@ -841,13 +858,13 @@ class THD : public MDL_context_owner,
     return m_dd_client.get();
   }
 
+  LEX_CSTRING m_query_string;
  private:
   std::unique_ptr<dd::cache::Dictionary_client> m_dd_client;
 
   /**
     The query associated with this statement.
   */
-  LEX_CSTRING m_query_string;
   String m_normalized_query;
 
   /**
@@ -944,6 +961,10 @@ class THD : public MDL_context_owner,
 
   /** Aditional network instrumentation for the server only. */
   NET_SERVER m_net_server_extension;
+  /** Thread scheduler callbacks for this connection per-thread and one-thread
+  scheduler callbacks are no-ops, so nullptr works for them, threadpool
+  scheduler will change this for its THDs */
+  THD_event_functions *scheduler{nullptr};
   /**
     Hash for user variables.
     User variables are per session,
@@ -1327,6 +1348,17 @@ class THD : public MDL_context_owner,
 
   /* <> 0 if we are inside of trigger or stored function. */
   uint in_sub_stmt;
+
+  /* Do not set socket timeouts for wait_timeout (used with threadpool) */
+  bool skip_wait_timeout{false};
+
+  inline ulong get_wait_timeout(void) const noexcept {
+    if (in_active_multi_stmt_transaction() &&
+        kill_idle_transaction_timeout > 0 &&
+        kill_idle_transaction_timeout < variables.net_wait_timeout)
+      return kill_idle_transaction_timeout;
+    return variables.net_wait_timeout;
+  }
 
   /**
     Used by fill_status() to avoid acquiring LOCK_status mutex twice
@@ -3517,7 +3549,7 @@ class THD : public MDL_context_owner,
     return copy_db_to(const_cast<char const **>(p_db), p_db_length);
   }
 
-  thd_scheduler scheduler;
+  thd_scheduler event_scheduler;
 
   /**
     Get resource group context.

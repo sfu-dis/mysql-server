@@ -1105,7 +1105,8 @@ int Srv_session::execute_command(enum enum_server_command command,
   thd.m_statement_psi =
       MYSQL_START_STATEMENT(&thd.m_statement_state, stmt_info_new_packet.m_key,
                             thd.db().str, thd.db().length, thd.charset(), NULL);
-  int ret = dispatch_command(&thd, data, command);
+  bool unused;
+  int ret = dispatch_command(&thd, data, command, true, &unused);
 
   thd.pop_protocol();
   DBUG_ASSERT(thd.get_protocol() == &protocol_error);

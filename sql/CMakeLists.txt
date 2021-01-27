@@ -83,7 +83,7 @@ ADD_CUSTOM_COMMAND(
   DEPENDS gen_keyword_list
 )
 
-ADD_DEFINITIONS(-DMYSQL_SERVER)
+ADD_DEFINITIONS(-DMYSQL_SERVER -DHAVE_POOL_OF_THREADS)
 
 SET(DD_SOURCES
   dd/collection.cc
@@ -537,6 +537,7 @@ SET(SQL_SHARED_SOURCES
   table_trigger_dispatcher.cc
   tc_log.cc
   thr_malloc.cc 
+  threadpool_common.cc
   transaction.cc
   transaction_info.cc
   trigger.cc
@@ -646,6 +647,13 @@ ELSEIF(WIN32)
   LIST(APPEND SQL_SHARED_SOURCES
     resourcegroups/platform/thread_attrs_api_win.cc)
 ENDIF()
+
+IF(WIN32)
+  LIST(APPEND SQL_SHARED_SOURCES threadpool_win.cc)
+ELSE()
+  LIST(APPEND SQL_SHARED_SOURCES threadpool_unix.cc)
+ENDIF()
+
 
 SET(SQL_SOURCE
   ${GEN_SOURCES}
@@ -768,7 +776,7 @@ ADD_DEPENDENCIES(sql_main GenServerSource)
 ADD_DEPENDENCIES(sql_main GenDigestServerSource)
 ADD_DEPENDENCIES(sql_main GenBootstrapPriv)
 ADD_DEPENDENCIES(sql_main GenSysSchema)
-TARGET_LINK_LIBRARIES(sql_main ${MYSQLD_STATIC_PLUGIN_LIBS} 
+TARGET_LINK_LIBRARIES(sql_main ${MYSQLD_STATIC_PLUGIN_LIBS}
   component_mysql_server mysys strings vio
   binlogevents_static ${LIBWRAP} ${LIBCRYPT} ${LIBDL} ${SSL_LIBRARIES})
 
@@ -923,6 +931,22 @@ MARK_AS_ADVANCED(DEBUG_EXTNAME)
 
 IF(DEBUG_EXTNAME)
   SET_TARGET_PROPERTIES(mysqld PROPERTIES DEBUG_OUTPUT_NAME "mysqld-debug")
+ENDIF()
+
+IF(NOT (${ERMIA_HEADER_PATH} STREQUAL ""))
+  if(${CMAKE_BUILD_TYPE} STREQUAL "Debug")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -include ${ERMIA_HEADER_PATH}/masstree/config-debug.h")
+  else()
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -include ${ERMIA_HEADER_PATH}/masstree/config-release.h")
+  endif()
+  include_directories(${ERMIA_HEADER_PATH})
+  include_directories(${ERMIA_HEADER_PATH}/masstree)
+  include_directories(${ERMIA_HEADER_PATH}/third-party/sparsehash/src)
+  include_directories(${ERMIA_HEADER_PATH}/third-party/glog/include)
+
+  link_directories(${ERMIA_HEADER_PATH}/third-party/glog/lib)
+  find_library(ERMIA_LIB ermia_si HINTS ${ERMIA_LIB_PATH})
+  TARGET_LINK_LIBRARIES(mysqld ${ERMIA_LIB})
 ENDIF()
 
 IF(APPLE) 

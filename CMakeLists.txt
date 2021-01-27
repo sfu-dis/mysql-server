@@ -175,6 +175,42 @@ IF(CMAKE_GENERATOR MATCHES "Visual Studio [1-9][0-9].*" AND
   SET(CMAKE_GENERATOR_TOOLSET "host=x64")
 ENDIF()
 
+SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++ -fcoroutines-ts -std=c++14 -Wno-implicit-int-float-conversion -Wno-range-loop-construct")
+SET(CMAKE_CXX_LINK_FLAGS "${CMAKE_CXX_LINK_FLAGS} -lc++abi")
+SET(ERMIA_HEADER_PATH "" CACHE STRING "ERMIA header path")
+SET(ERMIA_LIB_PATH "" CACHE STRING "ERMIA shared library path")
+
+IF(NOT (${ERMIA_HEADER_PATH} STREQUAL ""))
+  MESSAGE(STATUS "ERMIA header at: ${ERMIA_HEADER_PATH}")
+  MESSAGE(STATUS "ERMIA library at: ${ERMIA_LIB_PATH}")
+  add_definitions(-DCACHELINE_SIZE=64)
+  if(NOT(${CMAKE_BUILD_TYPE} STREQUAL "Debug"))
+    add_definitions(-DNDEBUG)
+  endif()
+  add_definitions(-DMASSTREE)
+
+  if(${CMAKE_BUILD_TYPE} STREQUAL "Debug")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -include ${ERMIA_HEADER_PATH}/masstree/config-debug.h")
+  else()
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -include ${ERMIA_HEADER_PATH}/masstree/config-release.h")
+  endif()
+  include_directories(${ERMIA_HEADER_PATH})
+  include_directories(${ERMIA_HEADER_PATH}/masstree)
+  include_directories(${ERMIA_HEADER_PATH}/third-party/sparsehash/src)
+
+  # The required headers for libc++.
+  include_directories(${ERMIA_HEADER_PATH}/third-party/glog/include)
+
+  link_directories(${ERMIA_LIB_PATH})
+
+  # Pre-build glog with libc++
+  link_directories(${ERMIA_HEADER_PATH}/third-party/glog/lib)
+
+  SET(ERMIA_LIB ermia_si thread_pool glog)
+
+#  add_definitions(-DERMIA_THREAD_POOL)
+ENDIF()
+
 # On Linux el6/el7 the default gcc is too old, see if devtoolset is installed.
 # Same with SLES 12, look for gcc 7 there.
 # We need to look for gcc before calling PROJECT below.

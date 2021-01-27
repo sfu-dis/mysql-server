@@ -27,6 +27,8 @@
 #include <list>
 #include <new>
 
+#include <dbcore/sm-thread.h>
+
 #include "my_compiler.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
@@ -255,7 +257,10 @@ static void *handle_connection(void *arg) {
     handler_manager->inc_aborted_connects();
     Connection_handler_manager::dec_connection_count();
     delete channel_info;
+
+#ifndef ERMIA_THREAD_POOL
     my_thread_exit(0);
+#endif
     return NULL;
   }
 
@@ -299,7 +304,8 @@ static void *handle_connection(void *arg) {
       handler_manager->inc_aborted_connects();
     else {
       while (thd_connection_alive(thd)) {
-        if (do_command(thd)) break;
+        bool unused;
+        if (do_command(thd, true, &unused)) break;
       }
       end_connection(thd);
     }
@@ -342,7 +348,10 @@ static void *handle_connection(void *arg) {
   }
 
   my_thread_end();
+
+#ifndef ERMIA_THREAD_POOL
   my_thread_exit(0);
+#endif
   return NULL;
 }
 }  // extern "C"
@@ -393,7 +402,12 @@ bool Per_thread_connection_handler::check_idle_thread_and_enqueue_connection(
 
 bool Per_thread_connection_handler::add_connection(Channel_info *channel_info) {
   int error = 0;
+#ifdef ERMIA_THREAD_POOL
+  ermia::thread::Thread *t = nullptr;
+#else
   my_thread_handle id;
+#endif
+
 
   DBUG_TRACE;
 
@@ -407,9 +421,20 @@ bool Per_thread_connection_handler::add_connection(Channel_info *channel_info) {
     connection. Create a new thread to handle the connection
   */
   channel_info->set_prior_thr_create_utime();
+
+#ifdef ERMIA_THREAD_POOL
+  t = ermia::thread::GetThread(true);
+  error = t ? 0 : 1;
+  if (t) {
+    t->StartTask(handle_connection, (char *)channel_info);
+  }
+  ALWAYS_ASSERT(t);
+#else
   error =
       mysql_thread_create(key_thread_one_connection, &id, &connection_attrib,
                           handle_connection, (void *)channel_info);
+#endif
+
 #ifndef DBUG_OFF
 handle_error:
 #endif  // !DBUG_OFF

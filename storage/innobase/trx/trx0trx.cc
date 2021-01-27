@@ -36,6 +36,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include <set>
 
 #include <sql_thd_internal_api.h>
+#include <storage/innobase/handler/ha_innodb.h>  // ha_innobase
 
 #include "btr0sea.h"
 #include "clone0clone.h"
@@ -62,6 +63,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "ut0new.h"
 #include "ut0pool.h"
 #include "ut0vec.h"
+#include "dbcore/sm-log.h"
 
 #include "my_dbug.h"
 #include "mysql/plugin.h"

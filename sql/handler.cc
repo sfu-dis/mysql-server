@@ -44,6 +44,7 @@
 #include <random>  // std::uniform_real_distribution
 #include <string>
 #include <vector>
+#include <algorithm>
 
 #include "keycache.h"
 #include "libbinlogevents/include/binlog_event.h"
@@ -121,6 +122,7 @@
 #include "sql/table.h"
 #include "sql/tc_log.h"
 #include "sql/thr_malloc.h"
+#include "thr_mutex.h"
 #include "sql/transaction.h"  // trans_commit_implicit
 #include "sql/transaction_info.h"
 #include "sql/xa.h"
@@ -1849,21 +1851,30 @@ int ha_commit_low(THD *thd, bool all, bool run_after_commit) {
       restore_backup_ha_data = true;
     }
 
+    DBUG_ASSERT(!thd->status_var_aggregated);
+
     for (; ha_info; ha_info = ha_info_next) {
       int err;
       handlerton *ht = ha_info->ht();
+      if (thd->transaction_rollback_request) {
+        ht->rollback(ht, thd, all);
+      }
       if ((err = ht->commit(ht, thd, all))) {
         char errbuf[MYSQL_ERRMSG_SIZE];
         my_error(ER_ERROR_DURING_COMMIT, MYF(0), err,
                  my_strerror(errbuf, MYSQL_ERRMSG_SIZE, err));
         error = 1;
       }
+
       DBUG_ASSERT(!thd->status_var_aggregated);
       thd->status_var.ha_commit_count++;
-      ha_info_next = ha_info->next();
       if (restore_backup_ha_data) reattach_engine_ha_data_to_thd(thd, ht);
+
+      ha_info_next = ha_info->next();
       ha_info->reset(); /* keep it conveniently zero-filled */
     }
+
+    // Clean up the trx info after use
     trn_ctx->reset_scope(trx_scope);
   }
   /* Free resources and perform other cleanup even for 'empty' transactions. */

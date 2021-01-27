@@ -197,6 +197,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #ifndef UNIV_HOTBACKUP
 /** Stop printing warnings, if the count exceeds this threshold. */
 static const size_t MOVED_FILES_PRINT_THRESHOLD = 32;
+extern handlerton *ermia_hton;
 
 SERVICE_TYPE(registry) *reg_svc = nullptr;
 my_h_service h_ret_sysvar_source_svc = nullptr;
@@ -5316,6 +5317,9 @@ static int innobase_commit(handlerton *hton, /*!< in: InnoDB handlerton */
     }
 
     innobase_commit_low(trx);
+
+    // Enqueue the entry into database
+    thd->rlsn.push(trx->commit_lsn, ermia::lsn_innodb);
 
     if (!read_only) {
       trx->flush_log_later = false;

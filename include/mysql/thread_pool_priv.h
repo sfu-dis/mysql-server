@@ -121,7 +121,8 @@ void thd_store_globals(THD *thd);
   state in THD object. This is the main objective of the thread pool to
   schedule the start of these commands.
 */
-bool do_command(THD *thd);
+bool do_command(THD *thd, bool force_sync, bool *out_is_early_return);
+void do_command_bottom_half(THD *thd);
 
 /*
   The thread pool requires an interface to the connection logic in the

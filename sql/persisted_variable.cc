@@ -90,7 +90,9 @@ const string version("\"Version\"");
 const string name("\"Name\"");
 const string value("\"Value\"");
 const string metadata("\"Metadata\"");
-const string timestamp("\"Timestamp\"");
+namespace literal {
+    const string timestamp("\"Timestamp\"");
+}
 const string user("\"User\"");
 const string host("\"Host\"");
 const string mysqld_section("\"mysql_server\"");
@@ -461,7 +463,7 @@ String *Persisted_variables_cache::construct_json_string(
   /* reset str */
   str = String();
   dest->append(
-      string(metadata + colon + open_brace + ::timestamp + colon).c_str());
+      string(metadata + colon + open_brace + literal::timestamp + colon).c_str());
   std::unique_ptr<Json_uint> var_ts(new (std::nothrow) Json_uint(timestamp));
   Json_wrapper vt(var_ts.release());
   vt.to_string(&str, true, String().ptr());

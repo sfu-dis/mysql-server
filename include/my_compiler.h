@@ -51,8 +51,10 @@
 
 // likely/unlikely are likely to clash with other symbols, do not #define
 #if defined(__cplusplus)
+#ifndef likely
 inline bool likely(bool expr) { return __builtin_expect(expr, true); }
 inline bool unlikely(bool expr) { return __builtin_expect(expr, false); }
+#endif
 #else
 #define likely(x) __builtin_expect((x), 1)
 #define unlikely(x) __builtin_expect((x), 0)

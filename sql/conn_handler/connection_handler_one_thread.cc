@@ -24,6 +24,7 @@
 
 #include <stddef.h>
 
+#include "my_systime.h"  //my_getsystime
 #include "mysql/psi/mysql_socket.h"
 #include "mysql/psi/mysql_thread.h"
 #include "mysql_com.h"
@@ -81,7 +82,8 @@ bool One_thread_connection_handler::add_connection(Channel_info *channel_info) {
   else {
     delete channel_info;
     while (thd_connection_alive(thd)) {
-      if (do_command(thd)) break;
+      bool unused;
+      if (do_command(thd, true, &unused)) break;
     }
     end_connection(thd);
   }

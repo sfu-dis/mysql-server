@@ -239,6 +239,8 @@ bool trans_begin(THD *thd, uint flags) {
   @retval true   Failure
 */
 
+extern handlerton *ermia_hton;
+
 bool trans_commit(THD *thd, bool ignore_global_read_lock) {
   int res;
   DBUG_TRACE;

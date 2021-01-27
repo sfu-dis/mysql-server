@@ -163,6 +163,7 @@
 #include "sql/table.h"
 #include "sql/table_cache.h"  // table_cache_manager
 #include "sql/thd_raii.h"
+#include "sql/threadpool.h"
 #include "sql/transaction.h"  // trans_rollback_implicit
 #include "sql/transaction_info.h"
 #include "sql_string.h"
@@ -172,6 +173,8 @@
 #ifdef WITH_LOCK_ORDER
 #include "sql/debug_lock_order.h"
 #endif /* WITH_LOCK_ORDER */
+
+#include "ermia.h"
 
 namespace dd {
 class Spatial_reference_system;
@@ -1115,7 +1118,8 @@ void execute_init_command(THD *thd, LEX_STRING *init_command,
   save_vio = protocol->get_vio();
   protocol->set_vio(NULL);
   protocol->create_command(&com_data, COM_QUERY, (uchar *)buf, len);
-  dispatch_command(thd, &com_data, COM_QUERY);
+  bool unused = false;
+  dispatch_command(thd, &com_data, COM_QUERY, true, &unused);
   protocol->set_client_capabilities(save_client_capabilities);
   protocol->set_vio(save_vio);
 
@@ -1145,6 +1149,18 @@ void cleanup_items(Item *item) {
 }
 
 /**
+   Helper function for do_command that finishes the last DBUG asserts
+*/
+void do_command_finish(THD *thd) {
+  /* The statement instrumentation must be closed in all cases. */
+  DBUG_ASSERT(thd->m_digest == NULL);
+  DBUG_ASSERT(thd->m_statement_psi == NULL);
+}
+
+// The commit pipeline is enabled by default.
+bool enable_commit_pipeline = true;
+
+/**
   Read one command from connection and execute it (query or simple command).
   This function is called in loop from thread function.
 
@@ -1154,9 +1170,14 @@ void cleanup_items(Item *item) {
     0  success
   @retval
     1  request of thread shutdown (see dispatch_command() description)
-*/
 
-bool do_command(THD *thd) {
+  @force_sync: whether to send notification to client synchronously. Will use
+               pipelined commit if false.
+
+  @out_is_early_return: pointer to a variable to indicate whether do_command
+                        returned early without notifying the client
+*/
+bool do_command(THD *thd, bool force_sync, bool *out_is_early_return) {
   bool return_value;
   int rc;
   NET *net = NULL;
@@ -1164,7 +1185,13 @@ bool do_command(THD *thd) {
   COM_DATA com_data;
   DBUG_TRACE;
   DBUG_ASSERT(thd->is_classic_protocol());
-
+  thd->rlsn.clear();
+  
+  /* if the knob disables the commit pipeline, the transaction won't be enqueued. */
+  if (!enable_commit_pipeline) {
+    force_sync=true;
+  }
+  
   /*
     indicator of uninitialized lex => normal flow of errors handling
     (see my_message_sql)
@@ -1187,7 +1214,8 @@ bool do_command(THD *thd) {
     number of seconds has passed.
   */
   net = thd->get_protocol_classic()->get_net();
-  my_net_set_read_timeout(net, thd->variables.net_wait_timeout);
+  if (!thd->skip_wait_timeout)
+    my_net_set_read_timeout(net, thd->get_wait_timeout());
   net_new_transaction(net);
 
   /*
@@ -1245,11 +1273,12 @@ bool do_command(THD *thd) {
 
     if (rc < 0) {
       return_value = true;  // We have to close it.
-      goto out;
+    } else {
+      net->error = 0;
+      return_value = false;
     }
-    net->error = 0;
-    return_value = false;
-    goto out;
+    do_command_finish(thd);
+    return return_value;
   }
 
 #ifndef DBUG_OFF
@@ -1270,15 +1299,23 @@ bool do_command(THD *thd) {
   /* Restore read timeout value */
   my_net_set_read_timeout(net, thd->variables.net_read_timeout);
 
-  return_value = dispatch_command(thd, &com_data, command);
+  bool early_return = false;
+  return_value = dispatch_command(thd, &com_data, command, force_sync, &early_return);
+  if (force_sync || !early_return) {
+    do_command_bottom_half(thd);
+  } else {
+    ALWAYS_ASSERT(out_is_early_return);
+    // The caller will enqueue the transaction and another commit thread will
+    // call do_command_bottom_half later when it's time
+    *out_is_early_return = true;
+  }
+  return return_value;
+}
+
+void do_command_bottom_half(THD *thd) {
   thd->get_protocol_classic()->get_output_packet()->shrink(
       thd->variables.net_buffer_length);
-
-out:
-  /* The statement instrumentation must be closed in all cases. */
-  DBUG_ASSERT(thd->m_digest == NULL);
-  DBUG_ASSERT(thd->m_statement_psi == NULL);
-  return return_value;
+  do_command_finish(thd);
 }
 
 /**
@@ -1465,7 +1502,8 @@ static void check_secondary_engine_statement(THD *thd,
         COM_QUIT
 */
 bool dispatch_command(THD *thd, const COM_DATA *com_data,
-                      enum enum_server_command command) {
+                      enum enum_server_command command,
+                      bool force_sync, bool *out_is_early_return) {
   bool error = 0;
   Global_THD_manager *thd_manager = Global_THD_manager::get_instance();
   DBUG_TRACE;
@@ -1787,6 +1825,7 @@ bool dispatch_command(THD *thd, const COM_DATA *com_data,
 
         /* Finalize server status flags after executing a statement. */
         thd->update_slow_query_status();
+        LOG(FATAL) << "Unexpected error";
         thd->send_statement_status();
 
         mysql_audit_notify(
@@ -2137,6 +2176,26 @@ bool dispatch_command(THD *thd, const COM_DATA *com_data,
   }
 
 done:
+  /* Queue up if we are committing this transaction */
+  // XXX(tzwang): Only queue up upon commit. Should be enough to only enqueue
+  // COM_QUERY and COM_STMT_EXECUTE which are for actually running queries.
+  // Note that for a correct pipelining implementation,
+  // it should work for any command regardless it's type.
+  if (!force_sync && (command == COM_QUERY || command == COM_STMT_EXECUTE) && 
+          (thd->lex->sql_command == SQLCOM_COMMIT || !thd->in_multi_stmt_transaction_mode())) {
+    *out_is_early_return = true;
+  } else {
+    *out_is_early_return = false;
+    dispatch_command_bottom_half(thd, command, clone_cmd, query_start_status_ptr);
+  }
+
+  return error;
+}
+
+void dispatch_command_bottom_half(THD *thd, enum enum_server_command command,
+                                  Sql_cmd_clone *clone_cmd,
+                                  struct System_status_var *query_start_status_ptr) {
+
   DBUG_ASSERT(thd->open_tables == NULL ||
               (thd->locked_tables_mode == LTM_LOCK_TABLES));
 
@@ -2146,9 +2205,13 @@ done:
   thd->send_statement_status();
 
   /* After sending response, switch to clone protocol */
+  // FIXME(tzwang): not supported for now
   if (clone_cmd != nullptr) {
+    /*
     DBUG_ASSERT(command == COM_CLONE);
     error = clone_cmd->execute_server(thd);
+    */
+    LOG(FATAL) << "COM_CLONE is not supported";
   }
 
   thd->rpl_thd_ctx.session_gtids_ctx().notify_after_response_packet(thd);
@@ -2171,7 +2234,6 @@ done:
 
   THD_STAGE_INFO(thd, stage_cleaning_up);
 
-  thd->reset_query();
   thd->set_command(COM_SLEEP);
   thd->proc_info = 0;
   thd->lex->sql_command = SQLCOM_END;
@@ -2184,6 +2246,7 @@ done:
   /* Prevent rewritten query from getting "stuck" in SHOW PROCESSLIST. */
   thd->rewritten_query.mem_free();
 
+  Global_THD_manager *thd_manager = Global_THD_manager::get_instance();
   thd_manager->dec_thread_running();
 
   /* Freeing the memroot will leave the THD::work_part_info invalid. */
@@ -2199,6 +2262,8 @@ done:
     The factor 5 is pretty much arbitrary, but ends up allowing three
     allocations (1 + 1.5 + 1.5²) under the current allocation policy.
   */
+  // FIXME(jianqiuz): Under high contention, this thd->mem_root may become nullptr
+  // Need to figure out why
   if (thd->mem_root->allocated_size() < 5 * thd->variables.query_prealloc_size)
     thd->mem_root->ClearForReuse();
   else
@@ -2208,8 +2273,6 @@ done:
 #if defined(ENABLED_PROFILING)
   thd->profiling->finish_current_query();
 #endif
-
-  return error;
 }
 
 /**
@@ -3439,12 +3502,15 @@ int mysql_execute_command(THD *thd, bool first_level) {
     case SQLCOM_DELETE_MULTI:
     case SQLCOM_UPDATE:
     case SQLCOM_UPDATE_MULTI:
+      goto cont;
     case SQLCOM_CREATE_TABLE:
     case SQLCOM_CREATE_INDEX:
     case SQLCOM_DROP_INDEX:
+      goto cont;
     case SQLCOM_ASSIGN_TO_KEYCACHE:
     case SQLCOM_PRELOAD_KEYS:
     case SQLCOM_LOAD: {
+cont:
       DBUG_ASSERT(first_table == all_tables && first_table != 0);
       DBUG_ASSERT(lex->m_sql_cmd != NULL);
       res = lex->m_sql_cmd->execute(thd);
@@ -4396,9 +4462,12 @@ int mysql_execute_command(THD *thd, bool first_level) {
     case SQLCOM_ANALYZE:
     case SQLCOM_CHECK:
     case SQLCOM_OPTIMIZE:
+      goto execont;
     case SQLCOM_REPAIR:
+      goto execont;
     case SQLCOM_TRUNCATE:
     case SQLCOM_ALTER_TABLE:
+      goto execont;
     case SQLCOM_HA_OPEN:
     case SQLCOM_HA_READ:
     case SQLCOM_HA_CLOSE:
@@ -4406,7 +4475,9 @@ int mysql_execute_command(THD *thd, bool first_level) {
       /* fall through */
     case SQLCOM_CREATE_SERVER:
     case SQLCOM_CREATE_RESOURCE_GROUP:
+      goto execont;
     case SQLCOM_ALTER_SERVER:
+      goto execont;
     case SQLCOM_ALTER_RESOURCE_GROUP:
     case SQLCOM_DROP_RESOURCE_GROUP:
     case SQLCOM_DROP_SERVER:
@@ -4427,6 +4498,7 @@ int mysql_execute_command(THD *thd, bool first_level) {
     case SQLCOM_UNINSTALL_COMPONENT:
     case SQLCOM_SHUTDOWN:
     case SQLCOM_ALTER_INSTANCE:
+      goto execont;
     case SQLCOM_SELECT:
     case SQLCOM_DO:
     case SQLCOM_CALL:
@@ -4443,12 +4515,14 @@ int mysql_execute_command(THD *thd, bool first_level) {
     case SQLCOM_CLONE:
     case SQLCOM_LOCK_INSTANCE:
     case SQLCOM_UNLOCK_INSTANCE:
+      goto execont;
     case SQLCOM_ALTER_TABLESPACE:
+      goto execont;
     case SQLCOM_EXPLAIN_OTHER:
     case SQLCOM_RESTART_SERVER:
     case SQLCOM_CREATE_SRS:
     case SQLCOM_DROP_SRS:
-
+execont:
       DBUG_ASSERT(lex->m_sql_cmd != nullptr);
       res = lex->m_sql_cmd->execute(thd);
       break;

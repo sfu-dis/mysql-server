@@ -39,6 +39,7 @@
 #include <random>  // std::mt19937
 #include <set>
 #include <string>
+#include <mutex>
 
 #include <mysql/components/services/page_track_service.h>
 #include "ft_global.h"  // ft_hints
@@ -656,6 +657,7 @@ enum legacy_db_type {
   DB_TYPE_MEMCACHE,
   DB_TYPE_FALCON,
   DB_TYPE_MARIA,
+  DB_TYPE_ERMIA,
   /** Performance schema engine. */
   DB_TYPE_PERFORMANCE_SCHEMA,
   DB_TYPE_TEMPTABLE,
@@ -2269,6 +2271,7 @@ struct Page_track_t {
 
   savepoint_*, prepare, recover, and *_by_xid pointers can be 0.
 */
+
 struct handlerton {
   /**
     Historical marker for if the engine is available or not.
